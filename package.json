@@ -1,0 +1,16 @@
+{
+  "name": "horizontal-mattress-airtable-download",
+  "version": "1.0.0",
+  "description": "Script to download mattress records from Airtable",
+  "main": "download.js",
+  "scripts": {
+    "start": "node download.js"
+  },
+  "dependencies": {
+    "airtable": "^0.12.2",
+    "dotenv": "^16.3.1",
+    "fs-extra": "^11.2.0",
+    "axios": "^1.6.2",
+    "path": "^0.12.7"
+  }
+} 
