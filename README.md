@@ -2,6 +2,13 @@
 
 This script downloads mattress records from an Airtable base, including related photographers, locations, and images. It's designed with rate limiting to avoid hitting Airtable's API limits.
 
+## Features
+
+- **Smart Resume Functionality**: Automatically picks up where it left off if interrupted
+- **Rate Limiting**: Avoids hitting Airtable's API limits
+- **Beautiful Terminal Output**: Uses Ora spinners for elegant progress indicators
+- **Selective Downloads**: Can download all data or just a sample for development
+
 ## Setup
 
 1. Make sure you have Node.js installed (version 14 or higher recommended)

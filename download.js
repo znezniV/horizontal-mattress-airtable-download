@@ -2,6 +2,16 @@ require('dotenv').config();
 const axios = require('axios');
 const fs = require('fs-extra');
 const path = require('path');
+const ora = require('ora');
+
+// Helper function for consistent logging
+const log = {
+  info: (message) => console.log(`ℹ️  ${message}`),
+  success: (message) => console.log(`✅ ${message}`),
+  warning: (message) => console.log(`⚠️  ${message}`),
+  error: (message) => console.error(`❌ ${message}`),
+  spinner: (message) => ora(message)
+};
 
 // Airtable API configuration
 const BASE_ID = process.env.BASE_ID;
@@ -50,7 +60,7 @@ const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
 // Helper function to make Airtable API requests with rate limiting and pagination
 async function fetchAirtableRecords(tableName, maxRecords = null, offset = null) {
-  console.log(`Fetching records from ${tableName}${offset ? ' with offset' : ''}...`);
+  const spinner = log.spinner(`Fetching records from ${tableName}${offset ? ' with offset' : ''}...`).start();
   
   try {
     const params = { 
@@ -74,7 +84,7 @@ async function fetchAirtableRecords(tableName, maxRecords = null, offset = null)
     );
     
     const records = response.data.records;
-    console.log(`Fetched ${records.length} records from ${tableName}`);
+    spinner.succeed(`Fetched ${records.length} records from ${tableName}`);
     
     // If there's more data to fetch (pagination)
     if (response.data.offset && !maxRecords) {
@@ -86,18 +96,20 @@ async function fetchAirtableRecords(tableName, maxRecords = null, offset = null)
     
   } catch (error) {
     if (error.response && error.response.status === 429) {
-      console.error(`Rate limit exceeded for ${tableName}. Waiting 30 seconds before retrying...`);
+      spinner.warn(`Rate limit exceeded for ${tableName}. Waiting 30 seconds before retrying...`);
       await delay(30000); // Wait 30 seconds before retrying
       return fetchAirtableRecords(tableName, maxRecords, offset);
     }
     
-    console.error(`Error fetching records from ${tableName}:`, error.response?.data || error.message);
+    spinner.fail(`Error fetching records from ${tableName}: ${error.response?.data || error.message}`);
     throw error;
   }
 }
 
 // Download an image from a URL with rate limiting
 async function downloadImage(url, filename) {
+  const spinner = log.spinner(`Downloading image ${path.basename(filename)}...`).start();
+  
   try {
     // Add delay before making the request
     await delay(CONFIG.API_DELAY);
@@ -113,17 +125,23 @@ async function downloadImage(url, filename) {
     response.data.pipe(writer);
     
     return new Promise((resolve, reject) => {
-      writer.on('finish', resolve);
-      writer.on('error', reject);
+      writer.on('finish', () => {
+        spinner.succeed(`Downloaded ${path.basename(filename)}`);
+        resolve();
+      });
+      writer.on('error', (err) => {
+        spinner.fail(`Error writing ${path.basename(filename)}: ${err.message}`);
+        reject(err);
+      });
     });
   } catch (error) {
     if (error.response && error.response.status === 429) {
-      console.error(`Rate limit exceeded for image download. Waiting 30 seconds before retrying...`);
+      spinner.warn(`Rate limit exceeded for image download. Waiting 30 seconds before retrying...`);
       await delay(30000); // Wait 30 seconds before retrying
       return downloadImage(url, filename);
     }
     
-    console.error(`Error downloading image from ${url}:`, error.message);
+    spinner.fail(`Error downloading image: ${error.message}`);
     throw error;
   }
 }
@@ -139,6 +157,8 @@ async function processImages(record, recordId) {
   
   const recordImagesDir = path.join(IMAGES_DIR, recordId);
   fs.ensureDirSync(recordImagesDir);
+  
+  log.info(`Processing ${images.length} images for record ${recordId}`);
   
   for (let i = 0; i < images.length; i++) {
     const image = images[i];
@@ -162,22 +182,20 @@ async function processImages(record, recordId) {
         const sizePercentDifference = (sizeDifference / image.size) * 100;
         
         if (sizePercentDifference < 1) {
-          console.log(`Image ${i + 1} for record ${recordId} already exists with matching size. Skipping download.`);
+          log.info(`Image ${i + 1} for record ${recordId} already exists with matching size. Skipping download.`);
           shouldDownload = false;
         } else {
-          console.log(`Image ${i + 1} for record ${recordId} exists but size differs (${existingSize} vs ${image.size}). Re-downloading.`);
+          log.warning(`Image ${i + 1} for record ${recordId} exists but size differs (${existingSize} vs ${image.size}). Re-downloading.`);
         }
       } catch (error) {
-        console.error(`Error checking existing image ${imagePath}:`, error.message);
+        log.error(`Error checking existing image ${imagePath}: ${error.message}`);
         // If there's an error checking the file, download it again to be safe
       }
     }
     
     try {
       if (shouldDownload) {
-        console.log(`Downloading image ${i + 1} for record ${recordId}...`);
         await downloadImage(image.url, imagePath);
-        console.log(`Downloaded image ${i + 1} for record ${recordId}`);
       }
       
       imageData.push({
@@ -190,7 +208,7 @@ async function processImages(record, recordId) {
         type: image.type
       });
     } catch (error) {
-      console.error(`Failed to download image ${i + 1} for record ${recordId}: ${error.message}`);
+      log.error(`Failed to download image ${i + 1} for record ${recordId}: ${error.message}`);
     }
   }
   
@@ -199,7 +217,7 @@ async function processImages(record, recordId) {
 
 // Fetch photographers
 async function fetchPhotographers() {
-  console.log('Fetching photographers...');
+  const spinner = log.spinner('Fetching photographers...').start();
   
   try {
     const records = await fetchAirtableRecords(TABLES.PHOTOGRAPHER, CONFIG.SAMPLE_SIZE[TABLES.PHOTOGRAPHER]);
@@ -211,16 +229,17 @@ async function fetchPhotographers() {
     }));
     
     fs.writeJsonSync(path.join(TABLES_DIR, 'photographer.json'), photographers, { spaces: 2 });
+    spinner.succeed(`Processed ${photographers.length} photographers`);
     return photographers;
   } catch (error) {
-    console.error('Error processing photographers:', error.message);
+    spinner.fail(`Error processing photographers: ${error.message}`);
     throw error;
   }
 }
 
 // Fetch locations
 async function fetchLocations() {
-  console.log('Fetching locations...');
+  const spinner = log.spinner('Fetching locations...').start();
   
   try {
     const records = await fetchAirtableRecords(TABLES.LOCATION, CONFIG.SAMPLE_SIZE[TABLES.LOCATION]);
@@ -232,23 +251,28 @@ async function fetchLocations() {
     }));
     
     fs.writeJsonSync(path.join(TABLES_DIR, 'location.json'), locations, { spaces: 2 });
+    spinner.succeed(`Processed ${locations.length} locations`);
     return locations;
   } catch (error) {
-    console.error('Error processing locations:', error.message);
+    spinner.fail(`Error processing locations: ${error.message}`);
     throw error;
   }
 }
 
 // Fetch mattresses
 async function fetchMattresses(photographers, locations) {
-  console.log('Fetching mattresses...');
+  const spinner = log.spinner('Fetching mattresses...').start();
   
   try {
     const records = await fetchAirtableRecords(TABLES.MATTRESSES, CONFIG.SAMPLE_SIZE[TABLES.MATTRESSES]);
     const mattresses = [];
+    spinner.succeed(`Fetched ${records.length} mattress records, processing...`);
     
-    for (const record of records) {
-      console.log(`Processing mattress record: ${record.id}`);
+    const progressSpinner = log.spinner(`Processing mattress records: 0/${records.length}`).start();
+    
+    for (let i = 0; i < records.length; i++) {
+      const record = records[i];
+      progressSpinner.text = `Processing mattress record: ${i+1}/${records.length} (${record.id})`;
       
       // Process images
       const images = await processImages(record, record.id);
@@ -279,10 +303,12 @@ async function fetchMattresses(photographers, locations) {
       mattresses.push(mattress);
     }
     
+    progressSpinner.succeed(`Processed ${mattresses.length} mattress records`);
+    
     fs.writeJsonSync(path.join(TABLES_DIR, 'allMatresses.json'), mattresses, { spaces: 2 });
     return mattresses;
   } catch (error) {
-    console.error('Error processing mattresses:', error.message);
+    log.error(`Error processing mattresses: ${error.message}`);
     throw error;
   }
 }
@@ -290,9 +316,11 @@ async function fetchMattresses(photographers, locations) {
 // Main function to orchestrate the download
 async function main() {
   try {
-    console.log('Starting data download with all references...');
-    console.log(`Data sizes: Mattresses=${CONFIG.SAMPLE_SIZE[TABLES.MATTRESSES] || 'ALL'}, Photographers=${CONFIG.SAMPLE_SIZE[TABLES.PHOTOGRAPHER] || 'ALL'}, Locations=${CONFIG.SAMPLE_SIZE[TABLES.LOCATION] || 'ALL'}`);
-    console.log(`API delay: ${CONFIG.API_DELAY}ms between requests`);
+    log.info('╔════════════════════════════════════════════════════════════╗');
+    log.info('║                HORIZONTAL MATTRESS DOWNLOADER              ║');
+    log.info('╚════════════════════════════════════════════════════════════╝');
+    log.info(`Data sizes: Mattresses=${CONFIG.SAMPLE_SIZE[TABLES.MATTRESSES] || 'ALL'}, Photographers=${CONFIG.SAMPLE_SIZE[TABLES.PHOTOGRAPHER] || 'ALL'}, Locations=${CONFIG.SAMPLE_SIZE[TABLES.LOCATION] || 'ALL'}`);
+    log.info(`API delay: ${CONFIG.API_DELAY}ms between requests`);
     
     // Check if data already exists
     const photographerJsonPath = path.join(TABLES_DIR, 'photographer.json');
@@ -305,39 +333,39 @@ async function main() {
     const mattressesExists = fs.existsSync(mattressesJsonPath);
     
     // Fetch all data
-    console.log('Downloading all photographers and locations first...');
+    log.info('Starting data download process...');
     
     if (photographerExists) {
-      console.log('Photographer data already exists. Loading from file...');
+      log.info('Photographer data already exists. Loading from file...');
       data.photographer = fs.readJsonSync(photographerJsonPath);
-      console.log(`Loaded ${data.photographer.length} photographers from file`);
+      log.success(`Loaded ${data.photographer.length} photographers from file`);
     } else {
       data.photographer = await fetchPhotographers();
-      console.log(`Downloaded ${data.photographer.length} photographers`);
+      log.success(`Downloaded ${data.photographer.length} photographers`);
     }
     
     if (locationExists) {
-      console.log('Location data already exists. Loading from file...');
+      log.info('Location data already exists. Loading from file...');
       data.location = fs.readJsonSync(locationJsonPath);
-      console.log(`Loaded ${data.location.length} locations from file`);
+      log.success(`Loaded ${data.location.length} locations from file`);
     } else {
       data.location = await fetchLocations();
-      console.log(`Downloaded ${data.location.length} locations`);
+      log.success(`Downloaded ${data.location.length} locations`);
     }
     
     if (mattressesExists) {
-      console.log('Mattress data already exists. Loading from file...');
+      log.info('Mattress data already exists. Loading from file...');
       data.allMatresses = fs.readJsonSync(mattressesJsonPath);
-      console.log(`Loaded ${data.allMatresses.length} mattresses from file`);
+      log.success(`Loaded ${data.allMatresses.length} mattresses from file`);
       
       // Even if we load from file, we still need to check and download any missing images
-      console.log('Checking for missing images...');
-      let imagesChecked = 0;
-      let imagesDownloaded = 0;
-      let imagesSkipped = 0;
+      log.info('Checking for missing images...');
+      
+      const imageSpinner = log.spinner('Processing images from existing mattress data...').start();
+      let totalImages = 0;
       
       for (const mattress of data.allMatresses) {
-        console.log(`Checking images for mattress: ${mattress.id}`);
+        imageSpinner.text = `Processing images for mattress: ${mattress.id}`;
         const originalImages = mattress.images.map(img => ({
           id: img.id,
           url: img.url,
@@ -346,7 +374,7 @@ async function main() {
           type: img.type
         }));
         
-        imagesChecked += originalImages.length;
+        totalImages += originalImages.length;
         
         // Process images will handle checking if they exist and downloading if needed
         await processImages({ 
@@ -358,13 +386,10 @@ async function main() {
       }
       
       // Count total images after processing
-      let totalImages = 0;
       let existingImages = 0;
       
       for (const mattress of data.allMatresses) {
         if (mattress.images && mattress.images.length > 0) {
-          totalImages += mattress.images.length;
-          
           for (let i = 0; i < mattress.images.length; i++) {
             const imagePath = path.join(IMAGES_DIR, mattress.id, `${i + 1}.jpg`);
             if (fs.existsSync(imagePath)) {
@@ -374,19 +399,37 @@ async function main() {
         }
       }
       
-      console.log(`Images summary: Total: ${totalImages}, Downloaded: ${existingImages}, Missing: ${totalImages - existingImages}`);
+      imageSpinner.succeed(`Images processed: ${existingImages}/${totalImages} (${totalImages - existingImages} missing)`);
     } else {
-      console.log('Downloading all mattresses and linking with photographers and locations...');
+      log.info('Downloading all mattresses and linking with photographers and locations...');
       data.allMatresses = await fetchMattresses(data.photographer, data.location);
-      console.log(`Downloaded ${data.allMatresses.length} mattresses`);
+      log.success(`Downloaded ${data.allMatresses.length} mattresses`);
     }
     
     // Create the final combined JSON file
+    const finalSpinner = log.spinner('Creating combined data file...').start();
     fs.writeJsonSync(combinedJsonPath, data, { spaces: 2 });
+    finalSpinner.succeed('Combined data file created successfully');
     
-    console.log('Download complete! Data has been saved to the data directory.');
+    log.success('╔════════════════════════════════════════════════════════════╗');
+    log.success('║                    DOWNLOAD COMPLETE!                      ║');
+    log.success('╚════════════════════════════════════════════════════════════╝');
+    log.success(`Data has been saved to the ${OUTPUT_DIR} directory`);
+    log.info(`Total photographers: ${data.photographer.length}`);
+    log.info(`Total locations: ${data.location.length}`);
+    log.info(`Total mattresses: ${data.allMatresses.length}`);
+    
+    // Count total images
+    let totalImages = 0;
+    for (const mattress of data.allMatresses) {
+      if (mattress.images) {
+        totalImages += mattress.images.length;
+      }
+    }
+    log.info(`Total images: ${totalImages}`);
+    
   } catch (error) {
-    console.error('Error downloading data:', error);
+    log.error(`Error downloading data: ${error.message}`);
     process.exit(1);
   }
 }
